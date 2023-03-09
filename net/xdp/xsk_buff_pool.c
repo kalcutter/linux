@@ -80,6 +80,7 @@ struct xsk_buff_pool *xp_create_and_assign_umem(struct xdp_sock *xs,
 	pool->headroom = umem->headroom;
 	pool->chunk_size = umem->chunk_size;
 	pool->chunk_shift = ffs(umem->chunk_size) - 1;
+	pool->hugetlb = umem->hugetlb;
 	pool->unaligned = unaligned;
 	pool->frame_len = umem->chunk_size - umem->headroom -
 		XDP_PACKET_HEADROOM;
@@ -369,16 +370,23 @@ void xp_dma_unmap(struct xsk_buff_pool *pool, unsigned long attrs)
 }
 EXPORT_SYMBOL(xp_dma_unmap);
 
-static void xp_check_dma_contiguity(struct xsk_dma_map *dma_map)
+/* HugeTLB pools consider contiguity at hugepage granularity only. Hence, all
+ * order-0 pages within a hugepage have the same contiguity value.
+ */
+static void xp_check_dma_contiguity(struct xsk_dma_map *dma_map, bool hugetlb)
 {
+	u32 page_size = hugetlb ? HPAGE_SIZE : PAGE_SIZE;
+	u32 n = page_size >> PAGE_SHIFT;
 	u32 i;
 
-	for (i = 0; i < dma_map->dma_pages_cnt - 1; i++) {
-		if (dma_map->dma_pages[i] + PAGE_SIZE == dma_map->dma_pages[i + 1])
+	for (i = 0; i + n < dma_map->dma_pages_cnt; i++) {
+		if (dma_map->dma_pages[i] + page_size == dma_map->dma_pages[i + n])
 			dma_map->dma_pages[i] |= XSK_NEXT_PG_CONTIG_MASK;
 		else
 			dma_map->dma_pages[i] &= ~XSK_NEXT_PG_CONTIG_MASK;
 	}
+	for (; i < dma_map->dma_pages_cnt; i++)
+		dma_map->dma_pages[i] &= ~XSK_NEXT_PG_CONTIG_MASK;
 }
 
 static int xp_init_dma_info(struct xsk_buff_pool *pool, struct xsk_dma_map *dma_map)
@@ -441,7 +449,7 @@ int xp_dma_map(struct xsk_buff_pool *pool, struct device *dev,
 	}
 
 	if (pool->unaligned)
-		xp_check_dma_contiguity(dma_map);
+		xp_check_dma_contiguity(dma_map, pool->hugetlb);
 
 	err = xp_init_dma_info(pool, dma_map);
 	if (err) {

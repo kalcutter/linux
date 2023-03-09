@@ -10,6 +10,7 @@
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/bpf.h>
+#include <linux/hugetlb_inline.h>
 #include <linux/mm.h>
 #include <linux/netdevice.h>
 #include <linux/rtnetlink.h>
@@ -18,6 +19,9 @@
 
 #include "xdp_umem.h"
 #include "xsk_queue.h"
+
+_Static_assert(XDP_UMEM_MIN_CHUNK_SIZE <= PAGE_SIZE);
+_Static_assert(XDP_UMEM_MAX_CHUNK_SIZE <= HPAGE_SIZE);
 
 static DEFINE_IDA(umem_ida);
 
@@ -91,6 +95,25 @@ void xdp_put_umem(struct xdp_umem *umem, bool defer_cleanup)
 	}
 }
 
+/* Returns true if the UMEM contains HugeTLB pages exclusively, false otherwise.
+ *
+ * The mmap_lock must be held by the caller.
+ */
+static bool xdp_umem_is_hugetlb(struct xdp_umem *umem, unsigned long address)
+{
+	unsigned long end = address + umem->npgs * PAGE_SIZE;
+	struct vm_area_struct *vma;
+	struct vma_iterator vmi;
+
+	vma_iter_init(&vmi, current->mm, address);
+	for_each_vma_range(vmi, vma, end) {
+		if (!is_vm_hugetlb_page(vma))
+			return false;
+	}
+
+	return true;
+}
+
 static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 {
 	unsigned int gup_flags = FOLL_WRITE;
@@ -102,8 +125,15 @@ static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 		return -ENOMEM;
 
 	mmap_read_lock(current->mm);
+
+	if (umem->hugetlb && !xdp_umem_is_hugetlb(umem, address)) {
+		mmap_read_unlock(current->mm);
+		err = -EINVAL;
+		goto out_pgs;
+	}
 	npgs = pin_user_pages(address, umem->npgs,
 			      gup_flags | FOLL_LONGTERM, &umem->pgs[0], NULL);
+
 	mmap_read_unlock(current->mm);
 
 	if (npgs != umem->npgs) {
@@ -152,20 +182,14 @@ static int xdp_umem_reg(struct xdp_umem *umem, struct xdp_umem_reg *mr)
 {
 	bool unaligned_chunks = mr->flags & XDP_UMEM_UNALIGNED_CHUNK_FLAG;
 	u32 chunk_size = mr->chunk_size, headroom = mr->headroom;
+	bool hugetlb = chunk_size > PAGE_SIZE;
 	u64 addr = mr->addr, size = mr->len;
 	u32 chunks_rem, npgs_rem;
 	u64 chunks, npgs;
 	int err;
 
-	if (chunk_size < XDP_UMEM_MIN_CHUNK_SIZE || chunk_size > PAGE_SIZE) {
-		/* Strictly speaking we could support this, if:
-		 * - huge pages, or*
-		 * - using an IOMMU, or
-		 * - making sure the memory area is consecutive
-		 * but for now, we simply say "computer says no".
-		 */
+	if (chunk_size < XDP_UMEM_MIN_CHUNK_SIZE || chunk_size > XDP_UMEM_MAX_CHUNK_SIZE)
 		return -EINVAL;
-	}
 
 	if (mr->flags & ~XDP_UMEM_UNALIGNED_CHUNK_FLAG)
 		return -EINVAL;
@@ -173,7 +197,7 @@ static int xdp_umem_reg(struct xdp_umem *umem, struct xdp_umem_reg *mr)
 	if (!unaligned_chunks && !is_power_of_2(chunk_size))
 		return -EINVAL;
 
-	if (!PAGE_ALIGNED(addr)) {
+	if (!PAGE_ALIGNED(addr) || (hugetlb && !IS_ALIGNED(addr, HPAGE_SIZE))) {
 		/* Memory area has to be page size aligned. For
 		 * simplicity, this might change.
 		 */
@@ -207,6 +231,7 @@ static int xdp_umem_reg(struct xdp_umem *umem, struct xdp_umem_reg *mr)
 	umem->pgs = NULL;
 	umem->user = NULL;
 	umem->flags = mr->flags;
+	umem->hugetlb = hugetlb;
 
 	INIT_LIST_HEAD(&umem->xsk_dma_list);
 	refcount_set(&umem->users, 1);
