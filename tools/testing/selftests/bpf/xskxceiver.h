@@ -150,7 +150,7 @@ struct ifobject {
 	bool release_rx;
 	bool shared_umem;
 	bool use_metadata;
-	bool unaligned_supp;
+	bool hugepages_supp;
 	u8 dst_mac[ETH_ALEN];
 	u8 src_mac[ETH_ALEN];
 };

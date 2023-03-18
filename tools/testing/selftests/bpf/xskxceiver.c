@@ -169,6 +169,11 @@ static u32 mode_to_xdp_flags(enum test_mode mode)
 	return (mode == TEST_MODE_SKB) ? XDP_FLAGS_SKB_MODE : XDP_FLAGS_DRV_MODE;
 }
 
+static bool need_hugepages(struct xsk_umem_info *umem)
+{
+	return umem->frame_size > sysconf(_SC_PAGESIZE) || umem->unaligned_mode;
+}
+
 static u64 umem_size(struct xsk_umem_info *umem)
 {
 	return umem->num_frames * umem->frame_size;
@@ -1253,7 +1258,7 @@ static void thread_common_ops(struct test_spec *test, struct ifobject *ifobject)
 	void *bufs;
 	int ret;
 
-	if (ifobject->umem->unaligned_mode)
+	if (need_hugepages(ifobject->umem))
 		mmap_flags |= MAP_HUGETLB | MAP_HUGE_2MB;
 
 	if (ifobject->shared_umem)
@@ -1463,8 +1468,8 @@ static int testapp_validate_traffic(struct test_spec *test)
 	struct ifobject *ifobj_rx = test->ifobj_rx;
 	struct ifobject *ifobj_tx = test->ifobj_tx;
 
-	if ((ifobj_rx->umem->unaligned_mode && !ifobj_rx->unaligned_supp) ||
-	    (ifobj_tx->umem->unaligned_mode && !ifobj_tx->unaligned_supp)) {
+	if ((need_hugepages(ifobj_rx->umem) && !ifobj_rx->hugepages_supp) ||
+	    (need_hugepages(ifobj_tx->umem) && !ifobj_tx->hugepages_supp)) {
 		ksft_test_result_skip("No huge pages present.\n");
 		return TEST_SKIP;
 	}
@@ -1771,7 +1776,7 @@ static void init_iface(struct ifobject *ifobj, const char *dst_mac, const char *
 	}
 
 	if (hugepages_present())
-		ifobj->unaligned_supp = true;
+		ifobj->hugepages_supp = true;
 }
 
 static void run_pkt_test(struct test_spec *test, enum test_mode mode, enum test_type type)
