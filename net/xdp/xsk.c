@@ -421,6 +421,9 @@ static void xsk_destruct_skb(struct sk_buff *skb)
 	sock_wfree(skb);
 }
 
+/* Chunks must fit in the SKB `frags` array. */
+_Static_assert(XDP_UMEM_MAX_CHUNK_SIZE / PAGE_SIZE <= MAX_SKB_FRAGS);
+
 static struct sk_buff *xsk_build_skb_zerocopy(struct xdp_sock *xs,
 					      struct xdp_desc *desc)
 {
