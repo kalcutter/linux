@@ -419,13 +419,20 @@ XDP_UMEM_REG setsockopt
 -----------------------
 
 This setsockopt registers a UMEM to a socket. This is the area that
-contain all the buffers that packet can reside in. The call takes a
+contains all the buffers that packets can reside in. The call takes a
 pointer to the beginning of this area and the size of it. Moreover, it
-also has parameter called chunk_size that is the size that the UMEM is
-divided into. It can only be 2K or 4K at the moment. If you have an
-UMEM area that is 128K and a chunk size of 2K, this means that you
-will be able to hold a maximum of 128K / 2K = 64 packets in your UMEM
-area and that your largest packet size can be 2K.
+also has a parameter called chunk_size that is the size that the UMEM is
+divided into. For example, if you have an UMEM area that is 128K and a
+chunk size of 2K, this means that you will be able to hold a maximum of
+128K / 2K = 64 packets in your UMEM and that your largest packet size
+can be 2K.
+
+Valid chunk sizes range from 2K to 64K. However, the chunk size must not
+exceed the size of a page (often 4K). This limitation is relaxed for
+UMEM areas allocated with HugeTLB pages. In this case, chunk sizes up
+to the system default hugepage size are supported. Note, this only works
+with hugepages allocated from the kernel's persistent pool. Using
+Transparent Huge Pages (THP) has no effect on the maximum chunk size.
 
 There is also an option to set the headroom of each single buffer in
 the UMEM. If you set this to N bytes, it means that the packet will

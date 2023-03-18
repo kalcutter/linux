@@ -75,6 +75,9 @@ struct xsk_buff_pool {
 	u32 chunk_size;
 	u32 chunk_shift;
 	u32 frame_len;
+#ifdef CONFIG_HUGETLB_PAGE
+	u32 page_size;
+#endif
 	u8 cached_need_wakeup;
 	bool uses_need_wakeup;
 	bool dma_need_sync;
@@ -165,6 +168,15 @@ static inline void xp_dma_sync_for_device(struct xsk_buff_pool *pool,
 	xp_dma_sync_for_device_slow(pool, dma, size);
 }
 
+static inline u32 xp_get_page_size(struct xsk_buff_pool *pool)
+{
+#ifdef CONFIG_HUGETLB_PAGE
+	return pool->page_size;
+#else
+	return PAGE_SIZE;
+#endif
+}
+
 /* Masks for xdp_umem_page flags.
  * The low 12-bits of the addr will be 0 since this is the page address, so we
  * can use them for flags.
@@ -175,7 +187,8 @@ static inline void xp_dma_sync_for_device(struct xsk_buff_pool *pool,
 static inline bool xp_desc_crosses_non_contig_pg(struct xsk_buff_pool *pool,
 						 u64 addr, u32 len)
 {
-	bool cross_pg = (addr & (PAGE_SIZE - 1)) + len > PAGE_SIZE;
+	const u32 page_size = xp_get_page_size(pool);
+	bool cross_pg = (addr & (page_size - 1)) + len > page_size;
 
 	if (likely(!cross_pg))
 		return false;

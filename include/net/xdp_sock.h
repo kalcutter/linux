@@ -28,6 +28,9 @@ struct xdp_umem {
 	struct user_struct *user;
 	refcount_t users;
 	u8 flags;
+#ifdef CONFIG_HUGETLB_PAGE
+	bool hugetlb;
+#endif
 	bool zc;
 	struct page **pgs;
 	int id;

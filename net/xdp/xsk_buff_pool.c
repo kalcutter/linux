@@ -80,9 +80,12 @@ struct xsk_buff_pool *xp_create_and_assign_umem(struct xdp_sock *xs,
 	pool->headroom = umem->headroom;
 	pool->chunk_size = umem->chunk_size;
 	pool->chunk_shift = ffs(umem->chunk_size) - 1;
-	pool->unaligned = unaligned;
 	pool->frame_len = umem->chunk_size - umem->headroom -
 		XDP_PACKET_HEADROOM;
+#ifdef CONFIG_HUGETLB_PAGE
+	pool->page_size = umem->hugetlb ? HPAGE_SIZE : PAGE_SIZE;
+#endif
+	pool->unaligned = unaligned;
 	pool->umem = umem;
 	pool->addrs = umem->addrs;
 	INIT_LIST_HEAD(&pool->free_list);
@@ -369,16 +372,25 @@ void xp_dma_unmap(struct xsk_buff_pool *pool, unsigned long attrs)
 }
 EXPORT_SYMBOL(xp_dma_unmap);
 
-static void xp_check_dma_contiguity(struct xsk_dma_map *dma_map)
+/* HugeTLB pools consider contiguity at hugepage granularity only. Hence, all
+ * order-0 pages within a hugepage have the same contiguity value.
+ */
+static void xp_check_dma_contiguity(struct xsk_dma_map *dma_map, u32 page_size)
 {
-	u32 i;
+	u32 stride = page_size >> PAGE_SHIFT; /* in order-0 pages */
+	u32 i, j;
 
-	for (i = 0; i < dma_map->dma_pages_cnt - 1; i++) {
-		if (dma_map->dma_pages[i] + PAGE_SIZE == dma_map->dma_pages[i + 1])
-			dma_map->dma_pages[i] |= XSK_NEXT_PG_CONTIG_MASK;
-		else
-			dma_map->dma_pages[i] &= ~XSK_NEXT_PG_CONTIG_MASK;
+	for (i = 0; i + stride < dma_map->dma_pages_cnt;) {
+		if (dma_map->dma_pages[i] + page_size == dma_map->dma_pages[i + stride]) {
+			for (j = 0; j < stride; i++, j++)
+				dma_map->dma_pages[i] |= XSK_NEXT_PG_CONTIG_MASK;
+		} else {
+			for (j = 0; j < stride; i++, j++)
+				dma_map->dma_pages[i] &= ~XSK_NEXT_PG_CONTIG_MASK;
+		}
 	}
+	for (; i < dma_map->dma_pages_cnt; i++)
+		dma_map->dma_pages[i] &= ~XSK_NEXT_PG_CONTIG_MASK;
 }
 
 static int xp_init_dma_info(struct xsk_buff_pool *pool, struct xsk_dma_map *dma_map)
@@ -441,7 +453,7 @@ int xp_dma_map(struct xsk_buff_pool *pool, struct device *dev,
 	}
 
 	if (pool->unaligned)
-		xp_check_dma_contiguity(dma_map);
+		xp_check_dma_contiguity(dma_map, xp_get_page_size(pool));
 
 	err = xp_init_dma_info(pool, dma_map);
 	if (err) {
