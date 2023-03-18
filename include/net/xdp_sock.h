@@ -30,6 +30,7 @@ struct xdp_umem {
 	u8 flags;
 	bool zc;
 	struct page **pgs;
+	u32 page_size;
 	int id;
 	struct list_head xsk_dma_list;
 	struct work_struct work;
